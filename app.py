@@ -7,10 +7,11 @@ import numpy as np
 import noisereduce as nr
 import soundfile as sf
 import streamlit as st
+from streamlit_mic_recorder import mic_recorder
 
 st.set_page_config(page_title="Tilawat Voice Cleaner", page_icon="🎙️", layout="centered")
 st.title("🎙️ Tilawat Voice Cleaner")
-st.write("Apni tilawat upload karein, ek click mein clean karein, phir sunein aur download karein.")
+st.write("Microphone se seedha tilawat record karein ya audio upload karein, phir clean karke download karein.")
 st.info(
     "Yeh app background noise kam karti hai aur volume ko halka sa balance karti hai. "
     "Aapki awaaz convert nahi hoti. Processing se tajweed, madd ya makharij mutasir ho sakte hain; "
@@ -67,23 +68,49 @@ def wav_to_mp3(wav_bytes):
             raise RuntimeError("MP3 conversion failed: " + result.stderr[-1200:])
         return mp3_path.read_bytes()
 
-uploaded = st.file_uploader("Apni tilawat ki audio upload karein", type=SUPPORTED)
+st.subheader("🎙️ Online recording")
+st.caption("Start Recording dabayein, microphone permission allow karein, phir Stop Recording dabayein.")
+recorded = mic_recorder(
+    start_prompt="🔴 Start Recording",
+    stop_prompt="⏹️ Stop Recording",
+    just_once=True,
+    use_container_width=True,
+    key="tilawat_recorder",
+)
 
+if recorded and recorded.get("bytes"):
+    st.session_state["source_audio"] = recorded["bytes"]
+    st.session_state["source_name"] = "recorded_tilawat"
+    st.session_state["source_suffix"] = "wav"
+
+if "source_audio" in st.session_state:
+    st.success("Recording/audio ready hai.")
+    st.audio(st.session_state["source_audio"], format="audio/wav")
+    if st.button("🗑️ Remove recording / choose another", use_container_width=True):
+        for key in ("source_audio", "source_name", "source_suffix", "cleaned_wav", "cleaned_mp3", "cleaned_name"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
+st.markdown("**Ya apni pehle se mojood audio upload karein**")
+uploaded = st.file_uploader("Audio file upload karein", type=SUPPORTED)
 if uploaded:
-    data = uploaded.getvalue()
-    suffix = Path(uploaded.name).suffix.lower().lstrip(".")
-    st.subheader("Original tilawat")
-    st.audio(data)
+    st.session_state["source_audio"] = uploaded.getvalue()
+    st.session_state["source_name"] = Path(uploaded.name).stem
+    st.session_state["source_suffix"] = Path(uploaded.name).suffix.lower().lstrip(".")
+    st.audio(uploaded.getvalue())
 
+if "source_audio" in st.session_state:
     if st.button("✨ Clean My Tilawat", type="primary", use_container_width=True):
         try:
             with st.spinner("Audio clean ho rahi hai..."):
+                data = st.session_state["source_audio"]
+                suffix = st.session_state.get("source_suffix", "wav")
                 samples, sr = decode_audio(data, suffix)
                 cleaned_wav = clean_audio(samples, sr)
                 cleaned_mp3 = wav_to_mp3(cleaned_wav)
                 st.session_state["cleaned_wav"] = cleaned_wav
                 st.session_state["cleaned_mp3"] = cleaned_mp3
-                st.session_state["cleaned_name"] = Path(uploaded.name).stem
+                st.session_state["cleaned_name"] = st.session_state.get("source_name", "tilawat")
             st.success("Audio tayyar hai! Sunein aur download karein.")
         except Exception as exc:
             st.error("Audio process nahi ho saki.")

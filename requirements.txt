@@ -3,3 +3,4 @@ numpy>=1.26,<3
 scipy>=1.11
 noisereduce>=3.0.3
 soundfile>=0.12
+streamlit-mic-recorder>=0.0.8
