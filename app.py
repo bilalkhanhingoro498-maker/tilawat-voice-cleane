@@ -1,67 +1,57 @@
 import io
-import os
-import tempfile
 from pathlib import Path
 
+import numpy as np
+import noisereduce as nr
+import soundfile as sf
 import streamlit as st
 from pydub import AudioSegment
-from df.enhance import enhance, init_df, load_audio, save_audio
 
-st.set_page_config(
-    page_title="Tilawat Voice Cleaner",
-    page_icon="🎙️",
-    layout="centered",
-)
-
+st.set_page_config(page_title="Tilawat Voice Cleaner", page_icon="🎙️", layout="centered")
 st.title("🎙️ Tilawat Voice Cleaner")
-st.write("Apni tilawat upload karein, ek click mein clean karein, phir sunein aur download karein.")
+st.write("Upload karein, ek click mein awaaz saaf karein, phir sunein aur download karein.")
 st.info(
-    "Yeh app noise kam karne aur awaaz ko saaf karne ki koshish karti hai. "
-    "Aapki awaaz convert nahi hoti, lekin har recording par result mukhtalif ho sakta hai. "
-    "Download se pehle tajweed, makharij aur madd zaroor sun kar check karein."
+    "Yeh version background noise ko kam karta hai aur volume ko balance karta hai. "
+    "Aapki awaaz convert nahi hoti. Noise reduction tajweed, madd ya makharij ko bhi affect kar sakti hai, "
+    "is liye publish karne se pehle audio zaroor sun kar check karein."
 )
 
-@st.cache_resource(show_spinner="Audio enhancement model load ho raha hai...")
-def get_model():
-    model, df_state, _ = init_df()
-    return model, df_state
-
-def to_wav_bytes(uploaded_file):
+def decode_audio(uploaded_file):
     audio = AudioSegment.from_file(uploaded_file)
-    # Mono is suitable for this enhancement model; keep the original sample rate conversion safe.
-    audio = audio.set_channels(1).set_frame_rate(48000)
-    buffer = io.BytesIO()
-    audio.export(buffer, format="wav")
-    buffer.seek(0)
-    return buffer.getvalue()
+    audio = audio.set_channels(1).set_frame_rate(44100)
+    wav_buffer = io.BytesIO()
+    audio.export(wav_buffer, format="wav")
+    wav_buffer.seek(0)
+    samples, sample_rate = sf.read(wav_buffer, dtype="float32")
+    if samples.ndim > 1:
+        samples = np.mean(samples, axis=1)
+    return samples, sample_rate
 
-def enhance_audio(wav_bytes):
-    with tempfile.TemporaryDirectory() as tmp:
-        input_path = os.path.join(tmp, "input.wav")
-        output_path = os.path.join(tmp, "enhanced.wav")
-        with open(input_path, "wb") as f:
-            f.write(wav_bytes)
+def clean_audio(samples, sample_rate):
+    cleaned = nr.reduce_noise(
+        y=samples,
+        sr=sample_rate,
+        stationary=False,
+        prop_decrease=0.60,
+        n_fft=1024,
+    )
+    peak = float(np.max(np.abs(cleaned))) if cleaned.size else 0.0
+    if peak > 0:
+        target_peak = 10 ** (-1.5 / 20)
+        cleaned = cleaned * min(target_peak / peak, 4.0)
+    cleaned = np.clip(cleaned, -0.999, 0.999)
+    output = io.BytesIO()
+    sf.write(output, cleaned, sample_rate, format="WAV", subtype="PCM_16")
+    return output.getvalue()
 
-        model, df_state = get_model()
-        audio, _ = load_audio(input_path, sr=df_state.sr())
-        cleaned = enhance(model, df_state, audio)
-        save_audio(output_path, cleaned, df_state.sr())
-
-        with open(output_path, "rb") as f:
-            return f.read()
-
-def wav_to_mp3_bytes(wav_bytes):
+def wav_to_mp3(wav_bytes):
     audio = AudioSegment.from_file(io.BytesIO(wav_bytes), format="wav")
-    buffer = io.BytesIO()
-    audio.export(buffer, format="mp3", bitrate="192k")
-    buffer.seek(0)
-    return buffer.getvalue()
+    output = io.BytesIO()
+    audio.export(output, format="mp3", bitrate="192k")
+    output.seek(0)
+    return output.getvalue()
 
-uploaded = st.file_uploader(
-    "Apni tilawat ki audio upload karein",
-    type=["wav", "mp3", "m4a", "ogg", "flac"],
-    help="Behtar result ke liye saaf recording karein aur clipping se bachein.",
-)
+uploaded = st.file_uploader("Apni tilawat ki audio upload karein", type=["wav", "mp3", "m4a", "ogg", "flac"])
 
 if uploaded:
     st.subheader("Original tilawat")
@@ -69,23 +59,23 @@ if uploaded:
 
     if st.button("✨ Clean My Tilawat", type="primary", use_container_width=True):
         try:
-            with st.spinner("Tilawat clean ho rahi hai. File ke size ke mutabiq kuch waqt lag sakta hai..."):
-                original_wav = to_wav_bytes(uploaded)
-                cleaned_wav = enhance_audio(original_wav)
-                cleaned_mp3 = wav_to_mp3_bytes(cleaned_wav)
+            with st.spinner("Audio clean ho rahi hai... file ke size ke mutabiq waqt lag sakta hai."):
+                samples, sample_rate = decode_audio(uploaded)
+                cleaned_wav = clean_audio(samples, sample_rate)
+                cleaned_mp3 = wav_to_mp3(cleaned_wav)
                 st.session_state["cleaned_wav"] = cleaned_wav
                 st.session_state["cleaned_mp3"] = cleaned_mp3
                 st.session_state["cleaned_name"] = Path(uploaded.name).stem
-            st.success("Audio tayyar hai! Ab sunein aur download karein.")
-        except Exception as e:
-            st.error("Audio process nahi ho saki. WAV ya MP3 file ke saath dobara try karein.")
-            st.caption("Technical detail: " + str(e))
+            st.success("Audio tayyar hai. Ab sunein aur download karein.")
+        except Exception as exc:
+            st.error("Audio process nahi ho saki. Chhoti WAV ya MP3 file se dobara try karein.")
+            st.caption(f"Technical detail: {exc}")
 
 if "cleaned_wav" in st.session_state:
     st.subheader("Saaf ki hui tilawat")
     st.audio(st.session_state["cleaned_wav"], format="audio/wav")
-    left, right = st.columns(2)
-    with left:
+    col1, col2 = st.columns(2)
+    with col1:
         st.download_button(
             "⬇️ Download WAV",
             data=st.session_state["cleaned_wav"],
@@ -93,7 +83,7 @@ if "cleaned_wav" in st.session_state:
             mime="audio/wav",
             use_container_width=True,
         )
-    with right:
+    with col2:
         st.download_button(
             "⬇️ Download MP3",
             data=st.session_state["cleaned_mp3"],
@@ -103,4 +93,4 @@ if "cleaned_wav" in st.session_state:
         )
 
 st.divider()
-st.caption("Tip: Original aur cleaned audio ko headphones par compare karein. Agar koi harf, madd ya tajweed badli hui lage, original recording use karein ya kam processing wali recording banayein.")
+st.caption("Tip: Pehle 10–20 second ki recording test karein. Agar koi harf, madd ya tajweed badli hui lage, original audio use karein.")
